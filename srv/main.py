@@ -19,6 +19,8 @@ import uvicorn
 from pydantic import BaseModel
 
 import numpy as np
+import onnx
+import onnxruntime as ort
 
 class ModelInput(BaseModel):
     inputdata: str
@@ -43,7 +45,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],)
 
-# Class UploadOnnxModel(BaseModel):
+
+onnx_model = onnx.load("onnxmodel/soccermodel.onnx")
+sess = ort.InferenceSession("onnxmodel/soccermodel.onnx")
+#sess = ort.InferenceSession("./models/ttt.onnx")
+input_name = sess.get_inputs()[0].name
+print("Input name  :", input_name)
+input_shape = sess.get_inputs()[0].shape
+print("Input shape :", input_shape)
+input_type = sess.get_inputs()[0].type
+print("Input type  :", input_type)
+
+output_name = sess.get_outputs()[0].name
+print("Output name  :", output_name)  
+output_shape = sess.get_outputs()[0].shape
+print("Output shape :", output_shape)
+output_type = sess.get_outputs()[0].type
+print("Output type  :", output_type)
+
+@app.post('/predict')
+async def predict():
+
+    x= np.array([[
+        63.0, 76.0, 56.0, 70.0, 27.0, 84.0, 
+        77.0, 78.0, 75.0, 75.0, 45.0, 56.0, 
+        61.0, 61.0, 68.0, 72.0, 72.0, 71.0, 
+        76.0, 47.0, 65.0, 68.0, 74.0, 74.0, 
+        67.0, 31.0, 55.0, 57.0, 75.0, 75.0, 
+        76.0, 86.0, 93.0, 88.0, 64.0, 78.0, 
+        61.0, 70.0, 77.0, 78.0, 82.0, 82.0, 
+        65.0, 80.0, 85.0, 86.0, 73.0, 72.0, 
+        61.0, 38.0, 65.0, 68.0, 88.0, 88.0, 
+        85.0, 71.0, 83.0, 84.0, 80.0, 72.0
+        ]]).astype("float32")
+    
+    alt = np.array([[
+        90.0,90.0,90.0,90.0,90.0,90.0,
+        90.0,90.0,90.0,90.0,90.0,90.0,
+        90.0,90.0,90.0,90.0,90.0,90.0,
+        90.0,90.0,90.0,90.0,90.0,90.0,
+        90.0,90.0,90.0,90.0,90.0,90.0,
+
+        80.0,80.0,80.0,80.0,80.0,80.0, 
+        80.0,80.0,80.0,80.0,80.0,80.0, 
+        80.0,80.0,80.0,80.0,80.0,80.0, 
+        80.0,80.0,80.0,80.0,80.0,80.0, 
+        80.0,80.0,80.0,80.0,80.0,80.0
+        ]]).astype("float32")
+    
+    onnx_pred = sess.run([output_name], {input_name: x})
+    print(onnx_pred)
+
+    result = np.argmax(onnx_pred, axis=-1)
+    print(result)
+
+    return { "message": str(result[0][0])}
 
 def load_json_file(file_path):
     try:
@@ -58,7 +114,6 @@ def load_json_file(file_path):
         print(f"An unexpected error occurred: {e}")
     
     return None
-
 
 """
 Generates evm verifier
@@ -217,7 +272,6 @@ async def gen_evm_verifier():
     #     err = traceback.format_exc()
     #     return "Something bad happened! Please inform the server admin\n" + err, 500
     return { "message": "win"}
-
 
 @app.get("/proofgen")
 async def proofgen():
