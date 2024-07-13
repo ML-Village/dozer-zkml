@@ -6,6 +6,7 @@ import ezkl
 import traceback
 from dotenv import load_dotenv, find_dotenv
 import uuid
+import json
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi import FastAPI
@@ -18,20 +19,12 @@ import uvicorn
 from pydantic import BaseModel
 
 import numpy as np
-import onnx
-import onnxruntime as ort
 
 class ModelInput(BaseModel):
     inputdata: str
     onnxmodel: str
 
 load_dotenv(find_dotenv())
-# flags to only allow for only one proof
-# the server cannot accomodate more than one proof
-loaded_onnxmodel = None
-loaded_inputdata = None
-loaded_proofname = None
-running = False
 
 WEBHOOK_PORT = int(os.environ.get("PORT", 8080))  # 443, 80, 88 or 8443 (port need to be 'open')
 WEBHOOK_LISTEN = '0.0.0.0' 
@@ -52,83 +45,19 @@ app.add_middleware(
 
 # Class UploadOnnxModel(BaseModel):
 
-onnx_model = onnx.load("onnxmodel/soccermodel.onnx")
-sess = ort.InferenceSession("onnxmodel/soccermodel.onnx")
-#sess = ort.InferenceSession("./models/ttt.onnx")
-input_name = sess.get_inputs()[0].name
-print("Input name  :", input_name)
-input_shape = sess.get_inputs()[0].shape
-print("Input shape :", input_shape)
-input_type = sess.get_inputs()[0].type
-print("Input type  :", input_type)
-
-output_name = sess.get_outputs()[0].name
-print("Output name  :", output_name)  
-output_shape = sess.get_outputs()[0].shape
-print("Output shape :", output_shape)
-output_type = sess.get_outputs()[0].type
-print("Output type  :", output_type)
-
-"""
-Upload onnx model for proving, no validation atm
-"""
-@app.post('/upload/onnxmodel')
-def upload_onnxmodel(onnxmodel: UploadFile = File(...)):
-    uuidval = uuid.uuid4()
-    file_location = f"onnxmodel/{str(uuidval)}.onnx"
-
-    os.makedirs(os.path.dirname(file_location), exist_ok=True)
-    with open(file_location, "wb") as f:
-        f.write(onnxmodel.file.read())
-
-    return {"file": str(uuidval) + ".onnx"}
-        
-"""
-Upload input data for proving, no validation atm
-"""
-@app.post('/upload/inputdata')
-def upload_inputdata(input_data: UploadFile = File(...)):
-    uuidval = uuid.uuid4()
-    file_location = f"inputdata/{str(uuidval)}.json"
-
-    os.makedirs(os.path.dirname(file_location), exist_ok=True)
-    with open(file_location, "wb") as f:
-        f.write(input_data.file.read())
-
-    return {"file": str(uuidval) + ".json"}
-
-"""
-Sets the model and input to be used
-"""
-@app.post('/run/initialize')
-async def set_model_input(model_input: ModelInput):
-    global loaded_inputdata, loaded_onnxmodel, loaded_proofname, running
-
-    if running:
-        raise HTTPException(status_code=400, detail="Already running, please wait for completion")
-
-    loaded_inputdata = os.path.join("inputdata", model_input.inputdata.strip())
-    loaded_onnxmodel = os.path.join("onnxmodel", model_input.onnxmodel.strip())
-
-    loaded_proofname = f"inputdata_{loaded_inputdata[10:46]}+onnxmodel_{loaded_onnxmodel[10:46]}"
-
-    return {
-        "loaded_inputdata": loaded_inputdata,
-        "loaded_onnxmodel": loaded_onnxmodel,
-        "proof_name": loaded_proofname
-    }
-
-@app.get('/run/initialize')
-async def get_model_input():
-    if loaded_inputdata is None or loaded_onnxmodel is None:
-        raise HTTPException(status_code=404, detail="No model or input data loaded")
-
-    return {
-        "loaded_inputdata": loaded_inputdata,
-        "loaded_onnxmodel": loaded_onnxmodel,
-        "proof_name": loaded_proofname
-    }
-
+def load_json_file(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+        return data
+    except FileNotFoundError:
+        print(f"Error: File not found at {file_path}")
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {file_path}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    
+    return None
 
 
 """
@@ -171,11 +100,24 @@ async def gen_evm_verifier():
     assert res == True
     res = await ezkl.calibrate_settings(loaded_inputdata, loaded_onnxmodel, settings_path, "resources")
     assert res == True
-    res = ezkl.get_srs(srs_path, settings_path)
+
+    # srs path
+    settingsDict = load_json_file(settings_path)
+    # print(settingsDict)
+    print(settingsDict["run_args"]["logrows"])
+
+
+    res = await ezkl.get_srs(settings_path, settingsDict["run_args"]["logrows"],
+                    srs_path=srs_path)
+    assert res == True
+
     res = ezkl.compile_circuit(loaded_onnxmodel, compiled_model_path, settings_path)
     assert res == True
     # srs path
-    res = ezkl.get_srs(srs_path, settings_path)
+    res = ezkl.get_srs(settings_path, settingsDict["run_args"]["logrows"],
+                    srs_path=srs_path)
+    assert res == True
+
     res = ezkl.gen_witness(loaded_inputdata, compiled_model_path, witness_path)
     assert os.path.isfile(witness_path)
     
@@ -277,106 +219,42 @@ async def gen_evm_verifier():
     return { "message": "win"}
 
 
-@app.post('/predict')
-async def predict():
-    # jsonpayload = await request.json()
-    
-    # results_dict = {}
-    # for i, b in enumerate(jsonpayload):
-    #     x = np.array([b]).astype("float32")
-    #     onnx_pred = sess.run([output_name], {input_name: x})
-        #score = onnx_pred[0][0][0]
-        #results_dict[i] = score
-    x= np.array([[
-        63.0, 76.0, 56.0, 70.0, 27.0, 84.0, 
-        77.0, 78.0, 75.0, 75.0, 45.0, 56.0, 
-        61.0, 61.0, 68.0, 72.0, 72.0, 71.0, 
-        76.0, 47.0, 65.0, 68.0, 74.0, 74.0, 
-        67.0, 31.0, 55.0, 57.0, 75.0, 75.0, 
-        76.0, 86.0, 93.0, 88.0, 64.0, 78.0, 
-        61.0, 70.0, 77.0, 78.0, 82.0, 82.0, 
-        65.0, 80.0, 85.0, 86.0, 73.0, 72.0, 
-        61.0, 38.0, 65.0, 68.0, 88.0, 88.0, 
-        85.0, 71.0, 83.0, 84.0, 80.0, 72.0
-        ]]).astype("float32")
-    
-    alt = np.array([[
-        90.0,90.0,90.0,90.0,90.0,90.0,
-        90.0,90.0,90.0,90.0,90.0,90.0,
-        90.0,90.0,90.0,90.0,90.0,90.0,
-        90.0,90.0,90.0,90.0,90.0,90.0,
-        90.0,90.0,90.0,90.0,90.0,90.0,
+@app.get("/proofgen")
+async def proofgen():
+    proof_path = os.path.join('proving/test.pf')
+    witness_path=os.path.join('proving/witness.json')
+    compiled_model_path=os.path.join('proving/network.compiled')
+    pk_path=os.path.join('proving/test.pk')
+    srs_path=os.path.join('proving/kzg.srs')
 
-        80.0,80.0,80.0,80.0,80.0,80.0, 
-        80.0,80.0,80.0,80.0,80.0,80.0, 
-        80.0,80.0,80.0,80.0,80.0,80.0, 
-        80.0,80.0,80.0,80.0,80.0,80.0, 
-        80.0,80.0,80.0,80.0,80.0,80.0
-        ]]).astype("float32")
-    
-    onnx_pred = sess.run([output_name], {input_name: x})
-    print(onnx_pred)
-
-    result = np.argmax(onnx_pred, axis=-1)
-    print(result)
-
-    if(result == 0):
-        result = "1-0"
-    elif(result == 2):
-        result = "0-1"
-    else:
-        result = "1-0"
-
-    # generate proof
-    loaded_inputdata="inputdata/soccertorchinput.json"
-    loaded_onnxmodel="onnxmodel/soccertorch.onnx"
-    loaded_proofname="inputdata_soccertorchinput+onnxmodel_soccertorch"
-    running=False
-
-    print(loaded_inputdata)
-    print(loaded_onnxmodel)
-    print(loaded_proofname)
-    print(running)
-    settings_path = os.path.join('settings.json')
-    print(settings_path)
-    srs_path = os.path.join('kzg.srs')
-    print(srs_path)
-    compiled_model_path = os.path.join('soccercircuit.compiled')
-    pk_path = os.path.join('test.pk')
-    vk_path = os.path.join('test.vk')
-    witness_path = os.path.join('witness.json')
-
-    res = ezkl.gen_witness(loaded_inputdata, compiled_model_path, witness_path)
-    assert os.path.isfile(witness_path)
-
-    # Generate the proof
-    print("generating proof...")
-    proof_path = os.path.join('proof.json')
-
-    proof = ezkl.prove(
-            witness_path,
-            compiled_model_path,
-            pk_path,
-            proof_path,
-            srs_path,
-            "single",
-        )
-    
+    res = ezkl.prove(
+        witness_path,
+        compiled_model_path,
+        pk_path,
+        proof_path,
+        "single",
+        srs_path=srs_path
+    )
+    #assert res == True
     assert os.path.isfile(proof_path)
-
-    # verify our proof via smart contracts
-
-
-    #sorted_results = sorted(results_dict.items(), key=lambda x:x[1], reverse=True)
-    #print(sorted_results)
-    #bestconfigkey = sorted_results[0][0]
-    #print(jsonpayload[bestconfigkey])
-
-    #return JSONResponse(content=jsonable_encoder(jsonpayload[bestconfigkey]))
-    return { "message": result}
+    return True
 
 @app.get("/verify")
 async def verify():
+    proof_path = os.path.join('proving/test.pf')
+    settings_path = os.path.join('proving/settings.json')
+    vk_path = os.path.join('proving/test.vk')
+    srs_path = os.path.join('proving/kzg.srs')
+    # VERIFY IT
+    res = ezkl.verify(
+            proof_path,
+            settings_path,
+            vk_path,
+            srs_path=srs_path
+        )
+
+    assert res == True
+    print("verified")
     return True
 
 @app.get("/")
