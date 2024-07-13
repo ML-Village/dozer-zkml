@@ -1,10 +1,12 @@
-version: "3"
+version: "3.4"
 services:
   pyinfer:
     image: dozer-zkml:latest
+    platform: linux/amd64
     container_name: dozer-zkml
     build:
       context: ./srv
+      network: host
     env_file:
       - ./srv/.env
     ports:
